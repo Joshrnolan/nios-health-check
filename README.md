@@ -23,7 +23,9 @@ Instead of clicking through the Grid Manager UI and manually copying values into
 The script gathers information such as:
 
 - Grid name, NIOS version, and Grid-wide licenses
-- Grid member inventory (including HA pairs) with role, IP, model, and platform
+- Grid **UUID** (or License UID on older NIOS) for unique Grid identification
+- Grid member inventory (including HA pairs) with role, model, and platform
+- Optional per-member IPv4 addresses (opt-in at runtime)
 - Installed licenses per physical node
 - Enabled services and protocols (DNS, DHCP, NTP, TFTP, HTTP, etc.)
 - DNS settings (views, nameserver groups, scavenging, query logging, DoH)
@@ -117,10 +119,29 @@ You will be asked for:
 2. WAPI username
 3. WAPI password (hidden input)
 4. Whether to bypass TLS verification (only if your Grid uses a self-signed certificate)
-5. Customer name
-6. Employee count
-7. Geographic region (`EMEA`, `AMS`, or `APJ`)
-8. User/SE name
+5. Whether to **include Member IP Addresses in the output** (new — see below)
+6. Customer name
+7. Employee count
+8. Geographic region (`EMEA`, `AMS`, or `APJ`)
+9. User/SE name
+
+### Member IP Address opt-in
+
+By default the report does **not** include per-member IPv4 addresses. At runtime you'll see:
+
+```
+Include Member IP Addresses in output (y/n) [n]:
+```
+
+- Answer `y` / `yes` and the script will query `member:dns?_return_fields=host_name,ipv4addr` to populate **column F ("Member IP")** for every row.
+- Answer `n` (or press Enter) and column F is left blank. All other columns are unaffected.
+
+You can also skip the prompt by passing one of:
+
+```bash
+--include-ip        # force-include IPs (no prompt)
+--no-include-ip     # force-exclude IPs (no prompt)
+```
 
 ### Non-interactive run
 
@@ -134,6 +155,7 @@ python nios_health_check_final.py \
     --employees 2500 \
     --geo AMS \
     --user "Jane Doe" \
+    --include-ip \
     --format both
 ```
 
@@ -155,6 +177,8 @@ python nios_health_check_final.py \
 | `--log` | Custom log file name |
 | `--insecure` | Bypass TLS certificate verification (self-signed certs) |
 | `--silent-warnings` | Suppress TLS warning messages |
+| `--include-ip` | Include Member IP addresses in column F (skips the interactive IP prompt) |
+| `--no-include-ip` | Exclude Member IP addresses (skips the interactive IP prompt) |
 | `--debug` | Enable verbose debug logging |
 
 ---
@@ -173,18 +197,30 @@ Inside, you'll find:
 |------|-------------|
 | `nios_health_audit_<timestamp>.xlsx` | Excel report with one row per physical node and 43 columns of Health Check data |
 | `nios_health_audit_<timestamp>.csv`  | Same data in CSV format |
-| `nios_health_audit_<timestamp>.summary.json` | Run summary: Grid name, version, counts, customer info, SHA-256 hashes of each output file |
+| `nios_health_audit_<timestamp>.summary.json` | Run summary: Grid name, version, Grid UUID, IP-inclusion choice, counts, customer info, SHA-256 hashes of each output file |
 | `nios_health_audit_<timestamp>.log.jsonl` | Structured JSON-line log of the run |
 
 Each row in the report represents a single physical node. For HA pairs, both the active and passive nodes are reported as separate rows, keyed by their hardware ID.
+
+### Column C — `grid_uuid`
+
+Column C is always labeled **`grid_uuid`**, but its source depends on the WAPI version detected on the Grid:
+
+| WAPI version | NIOS version | Column C source |
+|---|---|---|
+| **v2.14 or newer** | **9.1.0+** | `grid.uuid` (native Grid UUID) |
+| **v2.13 or older** | **≤ 9.0.8** | `grid:license_pool_container.lpc_uid` (License UID fallback — the closest stable per-Grid identifier available pre-9.1.0) |
+| Lookup failed | — | `"na"` |
+
+The version check and endpoint selection are handled automatically — no flags or manual intervention required.
 
 ---
 
 ## How It Works (High-Level)
 
-1. **Prompt & Connect** — The script collects the Grid IP, credentials, and customer context, then auto-detects the latest WAPI version supported by your Grid.
+1. **Prompt & Connect** — The script collects the Grid IP, credentials, TLS preference, and the IP-inclusion choice, plus customer context; then auto-detects the latest WAPI version supported by your Grid.
 2. **Verify** — It performs a lightweight connectivity test before doing any real work.
-3. **Collect** — Using a series of read-only WAPI calls, it gathers Grid identity, members, licenses, DNS/DHCP settings, object counts, and per-node performance metrics.
+3. **Collect** — Using a series of read-only WAPI calls, it gathers Grid identity, Grid UUID (or License UID fallback), members, licenses, DNS/DHCP settings, object counts, and per-node performance metrics. If you opted in, it additionally fetches per-member IPv4 addresses from `member:dns`.
 4. **Process** — For each Grid member, it walks through all associated nodes (including HA pairs), matches license records by hardware ID, and builds a structured row of data.
 5. **Report** — It writes an Excel workbook, a CSV file, and a JSON summary (including SHA-256 hashes of each output file for integrity).
 6. **Log Out** — It gracefully terminates the WAPI session.
@@ -198,6 +234,8 @@ The entire process is **read-only** — no `POST`, `PUT`, or `DELETE` calls are 
 - The script assumes the WAPI is reachable from the machine running it and that the supplied credentials have read access to the relevant objects.
 - Auto-detection of the WAPI version requires access to `v1.0/?_schema`. If unavailable, it falls back to **v2.12**.
 - Tested primarily against **NIOS 8.6+ and 9.x**. Older versions may behave differently or return 400 errors on certain fields.
+- **Grid UUID** is only natively available on NIOS 9.1.0+ (WAPI v2.14+). On older Grids the script transparently falls back to the License UID (`lpc_uid`) and stores it in the same `grid_uuid` column; the column header is unchanged so downstream tooling doesn't need to branch.
+- **Member IP addresses are opt-in.** By default column F is blank; it is populated only when `--include-ip` is passed or the interactive prompt is answered with `y`.
 - Some fields in the 43-column report (e.g., `Member QPS`, `Member LPS Total`, `Grid Enabled Feature`) are intentionally left blank — they are placeholders for data that is not directly exposed via WAPI or that is expected to be supplied from other sources.
 - The script collects data only at the moment it runs — it is a **point-in-time snapshot**, not a continuous monitor.
 - Large Grids with many members may take several minutes to complete due to per-member API calls.
@@ -214,6 +252,7 @@ Because this script authenticates against a Grid with a privileged account, plea
 - **Do not hard-code credentials.** Pass the password via the interactive prompt, or supply it through environment-variable-driven wrappers if automating.
 - **Avoid `--password` on the command line** when possible, as it can be captured in shell history or process listings.
 - **Keep `--insecure` off in production.** Only use it for test labs with self-signed certificates. When used, TLS certificate validation is skipped, which exposes the session to potential man-in-the-middle attacks.
+- **Be deliberate with `--include-ip`.** Member IP addresses are topology data. Only include them when the downstream consumer of the report needs them, and handle the resulting file accordingly.
 - **Protect the output directory.** The generated reports contain Grid topology, license inventory, and operational state — treat them as sensitive and store/share them accordingly.
 - **Review the log files** before sharing. Logs are JSON-formatted and include endpoint names and counts, but not credentials or record contents.
 - The script **logs out of its WAPI session** at the end of each run to free up the Grid's session slot.
@@ -225,10 +264,12 @@ Because this script authenticates against a Grid with a privileged account, plea
 | Symptom | Likely Cause | Suggested Fix |
 |--------|--------------|---------------|
 | `Connectivity test failed` | Wrong credentials, network block, or TLS mismatch | Verify IP/hostname and credentials; try `--insecure` if the Grid uses a self-signed certificate |
-| `TLS error on ...` | Self-signed or untrusted certificate | Re-run with `--insecure` (lab/test only) or install a trusted cert on the Grid |
+| `TLS error on .` | Self-signed or untrusted certificate | Re-run with `--insecure` (lab/test only) or install a trusted cert on the Grid |
 | `openpyxl not installed — skipping Excel output` | `openpyxl` missing | `pip install openpyxl`, or use `--format csv` |
 | `Could not auto-detect WAPI version` | Older NIOS that doesn't expose `v1.0/?_schema`, or network restriction | Supply `--api-version v2.12` (or another known-good version) |
 | `GET <endpoint> returned 400/401/403` | Insufficient permissions on the account | Grant the account read access to the affected object, or use a Grid admin |
+| Column C shows `na` | Both `grid.uuid` and `grid:license_pool_container.lpc_uid` lookups failed (typically a permissions issue on older NIOS) | Confirm the account can read `grid:license_pool_container`, or re-run with `--debug` to inspect the WAPI response |
+| Column F is blank even though you wanted IPs | `--no-include-ip` was passed, or the interactive prompt was answered with the default (`n`) | Re-run with `--include-ip`, or answer `y` at the "Include Member IP Addresses" prompt |
 | Script hangs during member processing | Offline member or slow API response | Wait — the script retries transient errors. Re-run with `--debug` for more visibility |
 | Empty output directory / "No data collected" | Connectivity failed after the prompt | Check the log file (`*.log.jsonl`) in the output directory for the underlying error |
 
@@ -241,7 +282,9 @@ For unresolved issues, enable verbose logging with `--debug` and inspect the gen
 The script is structured as a single file with clearly labeled sections to make adjustments straightforward:
 
 - **`HEADER_43`** — Change column names or add new fields to the report header.
-- **`InfobloxClient`** — Add new read-only methods for additional WAPI endpoints you want to include (e.g., threat protection profiles, custom extensible attributes).
+- **`InfobloxClient`** — Add new read-only methods for additional WAPI endpoints you want to include (e.g., threat protection profiles, custom extensible attributes). The v24 additions (`get_grid_uuid()`, `get_member_ipv4_map()`) are good templates.
+- **`wapi_supports_grid_uuid()` / `parse_wapi_version()`** — Central place to gate features by WAPI version; extend this pattern as Infoblox adds new fields in future NIOS releases.
+- **`gather_connection_info()`** — Add or reorder interactive prompts here; mirror any new option with a matching `argparse` flag in `build_arg_parser()`.
 - **`collect_and_report()`** — Modify the orchestration logic to add or remove data collection steps.
 - **`write_excel()` / `write_csv()`** — Adjust formatting, column widths, or add charts to the Excel output.
 - **`ROLE_MAP`** — Extend role detection logic if your Grid uses custom role labels.
