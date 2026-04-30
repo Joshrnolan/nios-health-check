@@ -1,8 +1,18 @@
-
 #!/usr/bin/env python3
 """
-Infoblox NIOS Grid Health Audit (Production v22)
+Infoblox NIOS Grid Health Audit (Production v24)
 ---------------------------------------------------
+v24 changes vs v23:
+  - FIX: Interactive "Include Member IP Addresses" prompt now actually fires.
+         (v23 bug: argparse store_true defaulted the attr to False, not None,
+         so the prompt was silently skipped.)
+  - Member IP (column F) is now sourced from member:dns?_return_fields=host_name,ipv4addr
+    when the user opts in, instead of parsing capacityreport._ref.
+  - When user chooses NO, column F is left blank for every row.
+
+v23 changes vs v22:
+  - Column C ("grid_uuid") populated from grid.uuid (WAPI v2.14+ / NIOS 9.1.0+)
+    with automatic fallback to grid:license_pool_container.lpc_uid on older NIOS.
 """
 from __future__ import annotations
 
@@ -54,7 +64,6 @@ HEADER_43: List[str] = [
     "Disk Usage Ratio", "Memeory Usage Ratio", "Member QPS",
 ]
 
-
 # ------------------------- Logging -------------------------
 class JsonLineFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
@@ -68,21 +77,21 @@ class JsonLineFormatter(logging.Formatter):
             payload["exception"] = self.formatException(record.exc_info)
         return json.dumps(payload)
 
-
 def setup_logging(log_path: str, debug: bool = False) -> logging.Logger:
     logger = logging.getLogger("bloxconnect")
     logger.setLevel(logging.DEBUG if debug else logging.INFO)
     logger.handlers.clear()
+
     ch = logging.StreamHandler()
     ch.setLevel(logging.DEBUG if debug else logging.INFO)
     ch.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
     logger.addHandler(ch)
+
     fh = RotatingFileHandler(log_path, maxBytes=10 * 1024 * 1024, backupCount=3)
     fh.setLevel(logging.DEBUG if debug else logging.INFO)
     fh.setFormatter(JsonLineFormatter())
     logger.addHandler(fh)
     return logger
-
 
 # ------------------------- HTTP Session -------------------------
 def make_session(verify_ssl: Any, proxies: Optional[Dict[str, str]] = None) -> requests.Session:
@@ -100,25 +109,37 @@ def make_session(verify_ssl: Any, proxies: Optional[Dict[str, str]] = None) -> r
         session.proxies.update(proxies)
     return session
 
-
 # ------------------------- Connection Prompt -------------------------
-def gather_connection_info(args: argparse.Namespace) -> Tuple[str, str, str, bool]:
+def gather_connection_info(args: argparse.Namespace) -> Tuple[str, str, str, bool, bool]:
     grid_ip = getattr(args, "grid_ip", "") or ""
     while not grid_ip:
         grid_ip = input("Grid Manager IP/Hostname: ").strip()
+
     username = getattr(args, "username", "") or ""
     while not username:
         username = input("WAPI Username: ").strip()
+
     password = getattr(args, "password", "") or ""
     while not password:
         password = getpass.getpass("WAPI Password: ")
+
     insecure = getattr(args, "insecure", False)
     if not insecure:
         ans = input("Bypass TLS Verification (y/n) [n]: ").strip().lower()
         if ans in ("y", "yes", "1", "true"):
             insecure = True
-    return grid_ip, username, password, insecure
 
+    # --- IP Address inclusion toggle (v24: fixed so prompt actually fires) ---
+    # argparse now uses default=None, so we can distinguish "user passed --include-ip"
+    # vs "user didn't pass it, should prompt".
+    include_ip_arg = getattr(args, "include_ip", None)
+    if include_ip_arg is None:
+        ans = input("Include Member IP Addresses in output (y/n) [n]: ").strip().lower()
+        include_ip = ans in ("y", "yes", "1", "true")
+    else:
+        include_ip = bool(include_ip_arg)
+
+    return grid_ip, username, password, insecure, include_ip
 
 def get_latest_wapi_version(
     grid_ip: str, username: str, password: str,
@@ -139,10 +160,8 @@ def get_latest_wapi_version(
         logger.warning(f"Could not auto-detect WAPI version (defaulting to {DEFAULT_API_VERSION}): {e}")
     return DEFAULT_API_VERSION
 
-
 # ------------------------- Infoblox WAPI Client -------------------------
 class InfobloxClient:
-
     def __init__(
         self, grid_ip: str, username: str, password: str,
         api_version: str = DEFAULT_API_VERSION, verify_ssl: Any = True,
@@ -179,6 +198,64 @@ class InfobloxClient:
     def get_grid_identity(self) -> Dict[str, Any]:
         return (self._get("grid", {"_return_fields": "name"}) or [{}])[0]
 
+    # --------------------------------------------------------------
+    # grid_uuid with automatic WAPI-version-aware fallback (v23)
+    # --------------------------------------------------------------
+    def get_grid_uuid(self, api_ver: str) -> str:
+        """
+        Returns grid.uuid when running WAPI >= v2.14 (NIOS 9.1.0+).
+        For older versions, falls back to grid:license_pool_container.lpc_uid.
+        """
+        try:
+            if wapi_supports_grid_uuid(api_ver):
+                data = self._get("grid", {"_return_fields": "uuid"}) or []
+                if data and isinstance(data, list):
+                    uuid_val = data[0].get("uuid", "")
+                    if uuid_val:
+                        self.logger.info(f"grid_uuid (uuid) retrieved via WAPI {api_ver}")
+                        return uuid_val
+                self.logger.warning("grid.uuid not returned; falling back to lpc_uid lookup")
+
+            data = self._get(
+                "grid:license_pool_container",
+                {"_return_fields": "lpc_uid"},
+            ) or []
+            if data and isinstance(data, list):
+                lpc_uid = data[0].get("lpc_uid", "")
+                if lpc_uid:
+                    self.logger.info("grid_uuid (lpc_uid fallback) retrieved")
+                    return lpc_uid
+        except Exception as e:
+            self.logger.error(f"get_grid_uuid failed: {e}")
+        return "na"
+
+    # --------------------------------------------------------------
+    # NEW in v24: member IP map via member:dns?_return_fields=host_name,ipv4addr
+    # --------------------------------------------------------------
+    def get_member_ipv4_map(self) -> Dict[str, str]:
+        """
+        Returns { host_name: ipv4addr } for every Grid member, sourced from the
+        member:dns endpoint.  Equivalent to:
+          curl -k -u USER:PASS \
+            "https://GRID/wapi/<ver>/member:dns?_return_fields=host_name,ipv4addr"
+        """
+        try:
+            data = self._get(
+                "member:dns",
+                {"_return_fields": "host_name,ipv4addr"},
+            ) or []
+            ip_map: Dict[str, str] = {}
+            for item in data:
+                host = item.get("host_name")
+                ip   = item.get("ipv4addr") or ""
+                if host:
+                    ip_map[host] = ip
+            self.logger.info(f"get_member_ipv4_map: {len(ip_map)} host(s) with IP")
+            return ip_map
+        except Exception as e:
+            self.logger.error(f"get_member_ipv4_map failed: {e}")
+            return {}
+
     def get_software_version(self) -> str:
         data = self._get("upgradestatus", {"type": "GRID", "_return_fields": "current_version_summary"})
         if data:
@@ -191,16 +268,18 @@ class InfobloxClient:
         return ", ".join(sorted(set(l.get("type", "") for l in data if l.get("type"))))
 
     def get_grid_members(self) -> List[Dict[str, Any]]:
-        # ipv4addr excluded — causes 400 on WAPI v2.14
+        # ipv4addr excluded on member — causes 400 on WAPI v2.14; we use member:dns instead.
         return self._get("member", {"_return_fields+": "node_info,service_status,host_name,master_candidate"}) or []
 
     def get_member_role_and_ip(self, host_name: str) -> Tuple[str, str]:
         """
         Authoritative role detection via capacityreport 'role' field.
         Returns (role_label, member_ip).
-        role field values: "Grid Master" -> "GM", "Grid Master Candidate" -> "GMC", else "Member".
-        member_ip extracted from capacityreport _ref trailing segment if it's an IPv4.
-        Offline/error members default to ("Member", "").
+
+        NOTE (v24): member_ip returned here is still derived from capacityreport._ref.
+        It is used ONLY when the grid-wide member:dns map does not have an entry
+        for this host_name (rare fallback).  When include_ip is False at the
+        caller, this value is discarded entirely before being written to the row.
         """
         data = self._get("capacityreport", {"name": host_name, "_return_fields": "name,role"})
         if not data:
@@ -217,28 +296,6 @@ class InfobloxClient:
         return role_label, member_ip
 
     def get_licenses_by_hwid(self) -> Dict[str, List[Dict[str, Any]]]:
-        """
-        Fetches ALL member:license records and groups them by hwid.
-
-        The member:license endpoint returns the 'hwid' field directly on every
-        record — no Base64 parsing or hostname correlation required.
-
-        Returns:
-            { "1B888FD244DF4119885B21BC469B524D": [
-                  {"type": "GRID", "kind": "Static", "expiration_status": "NOT_EXPIRED", ...},
-                  {"type": "DNS",  ...},
-                  {"type": "NIOS", ...},
-              ],
-              "59C1CA4017AC424FB5B6F1122DF506CE": [
-                  {"type": "NIOS",      ...},
-                  {"type": "REPORTING", ...},
-              ],
-              ...
-            }
-
-        During row building, look up by node.get('hwid') to get that physical
-        node's license list. Works for all member types including Reporting.
-        """
         data = self._get(
             "member:license",
             {"_return_fields": "type,kind,limit,expiration_status,expiry_date,hwid"},
@@ -311,7 +368,6 @@ class InfobloxClient:
         except Exception as e:
             self.logger.error(f"WAPI logout failed: {e}")
 
-
 # ------------------------- Output Writers -------------------------
 def write_excel(rows: List[Dict[str, Any]], path: str, logger: logging.Logger) -> None:
     if not XLSX_AVAILABLE:
@@ -330,7 +386,6 @@ def write_excel(rows: List[Dict[str, Any]], path: str, logger: logging.Logger) -
                 cell.number_format = "0%"
     wb.save(path)
 
-
 def write_csv(rows: List[Dict[str, Any]], path: str) -> None:
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
@@ -341,7 +396,6 @@ def write_csv(rows: List[Dict[str, Any]], path: str) -> None:
                 for i, h in enumerate(HEADER_43, 1)
             ])
 
-
 # ------------------------- Helpers -------------------------
 def pct_to_ratio(s: str) -> float:
     try:
@@ -349,11 +403,9 @@ def pct_to_ratio(s: str) -> float:
     except Exception:
         return 0.0
 
-
 def validate_geo(value: Optional[str]) -> str:
     v = (value or "AMS").strip().upper()
     return v if v in {"EMEA", "AMS", "APJ"} else "AMS"
-
 
 def sha256_file(path: str) -> str:
     h = hashlib.sha256()
@@ -362,13 +414,26 @@ def sha256_file(path: str) -> str:
             h.update(chunk)
     return h.hexdigest()
 
+# ------------------------- Version Helpers -------------------------
+def parse_wapi_version(v: str) -> Tuple[int, int]:
+    """Convert 'v2.14' / '2.14.1' -> (2, 14).  Returns (0, 0) on failure."""
+    try:
+        parts = [int(x) for x in str(v).lower().lstrip("v").split(".") if x.isdigit()]
+        major = parts[0] if len(parts) >= 1 else 0
+        minor = parts[1] if len(parts) >= 2 else 0
+        return (major, minor)
+    except Exception:
+        return (0, 0)
+
+def wapi_supports_grid_uuid(api_ver: str) -> bool:
+    """grid.uuid is exposed starting at WAPI v2.14 (NIOS 9.1.0)."""
+    return parse_wapi_version(api_ver) >= (2, 14)
 
 # ------------------------- Main Orchestration -------------------------
 def collect_and_report(args: argparse.Namespace) -> None:
     ts      = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = f"{APP_NAME}_{ts}"
     os.makedirs(out_dir, exist_ok=True)
-
     log_path = os.path.join(out_dir, args.log or f"{APP_NAME}_{ts}.log.jsonl")
     logger   = setup_logging(log_path, debug=args.debug)
 
@@ -379,14 +444,16 @@ INFOBLOX HEALTH CHECK DATA COLLECTION
 Please provide the following information:
 ------------------------------------------------------------""")
 
-    grid_ip, username, password, insecure = gather_connection_info(args)
+    grid_ip, username, password, insecure, include_ip = gather_connection_info(args)
     verify_ssl = not insecure
 
     customer  = args.customer or input("Customer Name: ").strip() or "General"
     employees = str(args.employees) if args.employees is not None else (input("Employee Count [100]: ").strip() or "100")
     geo       = validate_geo(args.geo) if args.geo else validate_geo(input("Geo Country Name (EMEA, AMS, or APJ) [AMS]: ").strip())
     user_name = args.user or input("User/SE Name: ").strip() or "SE"
+
     print("------------------------------------------------------------\n")
+    print(f"Include Member IP Addresses in output: {'YES' if include_ip else 'NO'}\n")
 
     if not verify_ssl or args.silent_warnings:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -399,10 +466,11 @@ Please provide the following information:
         logger.info(f"Connecting to {grid_ip} to auto-detect latest WAPI version.")
         api_ver = get_latest_wapi_version(grid_ip, username, password, verify_ssl, None, logger)
         logger.info(f"Auto-detected WAPI version: {api_ver}")
-
     print(f"Connecting to Infoblox Grid at {grid_ip} (API {api_ver}).")
+
     client = InfobloxClient(grid_ip=grid_ip, username=username, password=password,
                             api_version=api_ver, verify_ssl=verify_ssl, logger=logger)
+
     if not client.test_connectivity():
         return
 
@@ -416,17 +484,24 @@ Please provide the following information:
     ver = client.get_software_version()
     print(f"Grid Version: {ver}")
 
-    grid_lics = client.get_global_licenses()
+    grid_uuid = client.get_grid_uuid(api_ver)
+    if wapi_supports_grid_uuid(api_ver):
+        print(f"Grid UUID: {grid_uuid}")
+    else:
+        print(f"Grid UUID (license_UID fallback for WAPI {api_ver}): {grid_uuid}")
 
+    grid_lics = client.get_global_licenses()
     members = client.get_grid_members()
     print(f"Found {len(members)} member(s)")
 
-    # ----------------------------------------------------------------
-    # LICENSE DATA — single API call, keyed by hwid
-    # member:license returns 'hwid' directly; no Base64 parsing needed.
-    # ----------------------------------------------------------------
     licenses_by_hwid = client.get_licenses_by_hwid()
     print(f"Found licenses for {len(licenses_by_hwid)} unique serial number(s)")
+
+    # --- NEW in v24: only call member:dns IP endpoint if the user opted in ---
+    member_ip_map: Dict[str, str] = {}
+    if include_ip:
+        member_ip_map = client.get_member_ipv4_map()
+        print(f"Retrieved IPv4 addresses for {len(member_ip_map)} member(s)")
 
     dns_scav, _  = client.get_global_dns_settings()
     _, dns_log   = client.get_global_dns_settings()
@@ -445,14 +520,21 @@ Please provide the following information:
     print("================================================================================\n")
 
     results: List[Dict[str, Any]] = []
-
     for idx, member in enumerate(members, 1):
         h_name = member.get("host_name", "N/A")
         print(f"[{idx}/{len(members)}] Processing member: {h_name}")
 
-        # --- Role + IP (authoritative via capacityreport 'role' field) ---
-        role_label, member_ip = client.get_member_role_and_ip(h_name)
-        print(f"  - Role: {role_label} | IP: {member_ip or '(not available)'}")
+        # --- Role (always) + fallback IP from capacityreport._ref ---
+        role_label, cap_report_ip = client.get_member_role_and_ip(h_name)
+
+        # --- Column-F IP value is controlled by the user's opt-in (v24) ---
+        if include_ip:
+            # Prefer member:dns ipv4addr; fall back to capacityreport._ref IP.
+            member_ip_value = member_ip_map.get(h_name) or cap_report_ip or ""
+        else:
+            member_ip_value = ""
+
+        print(f"  - Role: {role_label} | IP: {member_ip_value or '(not included)'}")
 
         obj_count = client.get_member_object_count(h_name)
         print(f"  - Object count: {obj_count}")
@@ -465,24 +547,19 @@ Please provide the following information:
 
         dhcp_hosts = client.get_active_dhcp_leases(dhcp_map.get(h_name, {}).get("ref"))
 
-        # --- HA Pair: iterate ALL node_info entries ---
         node_info_data = member.get("node_info", [])
         if not isinstance(node_info_data, list) or not node_info_data:
             node_info_data = [{}]
+
         is_ha = len(node_info_data) == 2
         if is_ha:
             print(f"  - HA Pair detected: processing Active and Passive nodes.")
 
         for node_idx, node in enumerate(node_info_data):
             node_hwid = node.get("hwid", "")
-
             if is_ha:
                 print(f"    - Node {node_idx+1}: ha_status={node.get('ha_status','N/A').upper()}, hwid={node_hwid or 'N/A'}")
 
-            # ----------------------------------------------------------------
-            # LICENSE LOOKUP — keyed by this node's hwid
-            # Each physical node has its own hwid and its own license records.
-            # ----------------------------------------------------------------
             node_lics   = licenses_by_hwid.get(node_hwid, [])
             lic_types   = [l.get("type", "").lower() for l in node_lics]
             features: set = set(lic_types)
@@ -492,7 +569,6 @@ Please provide the following information:
                 features.add("threat insight")
             license_str = ", ".join(sorted(set(l.get("type", "") for l in node_lics if l.get("type"))))
 
-            # --- Per-node performance metrics from service_status ---
             perf: Dict[str, Any] = {"cpu": "0%", "disk": "0%", "mem": "0%", "doh": False}
             node_protocols = set(base_protocols)
             for svc in node.get("service_status", []):
@@ -516,10 +592,10 @@ Please provide the following information:
             results.append({
                 "Customer Name":              customer,
                 "Employee Count":             employees,
-                "grid_uuid":                  "na",
+                "grid_uuid":                  grid_uuid,
                 "Member Serial Number":       node_hwid or "N/A",
                 "Member Role":                role_label,
-                "Member IP":                  member_ip,
+                "Member IP":                  member_ip_value,   # v24: blank when user opts out
                 "Member Host Name":           h_name,
                 "Member Model":               node.get("hwtype", "N/A"),
                 "Member Platform":            (node.get("host_platform") or node.get("hwplatform") or node.get("hypervisor") or "N/A"),
@@ -587,6 +663,7 @@ Please provide the following information:
 
     summary = {
         "grid_ip": grid_ip, "api_version": api_ver, "grid_name": grid_name,
+        "grid_uuid": grid_uuid, "include_ip": include_ip,
         "member_count": len(members), "row_count": len(results),
         "views": grid_counts["views"], "admins": grid_counts["admins"],
         "folders": grid_counts["folders"], "has_nsg": grid_counts["has_nsg"],
@@ -601,13 +678,13 @@ Please provide the following information:
     print(f"\nTotal logical members : {len(members)}")
     print(f"Total physical rows   : {len(results)}")
     print(f"Output directory      : {os.path.abspath(out_dir)}")
+
     print("\nLogging out of WAPI session.")
     client.logout()
 
-
 # ------------------------- CLI -------------------------
 def build_arg_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Infoblox NIOS Health Audit (v22)")
+    p = argparse.ArgumentParser(description="Infoblox NIOS Health Audit (v24)")
     p.add_argument("--grid-ip")
     p.add_argument("--customer")
     p.add_argument("--employees",       type=int)
@@ -620,9 +697,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--username")
     p.add_argument("--password")
     p.add_argument("--api-version")
-    p.add_argument("--debug",           action="store_true")
+    # v24 fix: default=None so the interactive prompt runs when --include-ip/--no-include-ip
+    # is NOT passed on the CLI.  store_true alone defaults to False, which suppressed the prompt.
+    p.add_argument("--include-ip",    dest="include_ip", action="store_true",
+                   default=None,
+                   help="Include Member IP addresses in the output (skips interactive prompt).")
+    p.add_argument("--no-include-ip", dest="include_ip", action="store_false",
+                   help="Exclude Member IP addresses (skips interactive prompt).")
+    p.add_argument("--debug",         action="store_true")
     return p
-
 
 if __name__ == "__main__":
     collect_and_report(build_arg_parser().parse_args())

@@ -1,0 +1,22 @@
+# Script output directories
+nios_health_audit_*/
+
+# Scratch / test files
+health_check_test.py
+*_test.py
+*.bak
+
+# Unrelated sibling projects
+DNS_cname_validation-main/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
