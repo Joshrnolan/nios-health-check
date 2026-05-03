@@ -1,5 +1,5 @@
 """
-update_sheet1_description.py
+enhance_shape_data.py
 ────────────────────────────
 For each row in Sheet2, finds the first available (unused) matching row in
 Sheet1 and writes Sheet2's 'Member Serial Number' + 'Member Host Name'
@@ -27,7 +27,7 @@ How target_model and hw_sku_filter are derived from Sheet2 'Member Model':
 
 Usage
 ─────
-    python update_sheet1_description.py <sheet1.tsv> <sheet2.csv> [output.xlsx]
+    python enhance_shape_data.py <sheet1.tsv> <sheet2.csv> [output.xlsx]
 
     sheet1.tsv   – tab-delimited file treated as Sheet1
     sheet2.csv   – comma-delimited CSV file treated as Sheet2

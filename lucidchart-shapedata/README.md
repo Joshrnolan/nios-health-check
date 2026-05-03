@@ -1,4 +1,15 @@
 
+> ### ⚠️ Important Disclaimer
+>
+> **This is NOT an officially supported Infoblox tool.**
+>
+> This script was developed as a personal project by an Infoblox Sales Engineer and is provided **as-is**, without warranty of any kind. It is not a product of Infoblox, Inc., and is **not covered by Infoblox Technical Support**.
+>
+> - Infoblox Support **will not** troubleshoot, debug, or provide assistance with this script.
+> - Updates, fixes, and enhancements are **best-effort only** and not guaranteed.
+> - Use of this script is entirely at your own discretion and risk.
+> - Always review the script and test in a non-production environment before running against a production Grid.
+
 # enhance_shape_data.py
 
 A Python script that enriches a Lucid diagram shape data export (TSV) from the Infoblox NIOS Health Check application with device
