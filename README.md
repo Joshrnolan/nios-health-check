@@ -71,7 +71,7 @@ All other modules used (`argparse`, `csv`, `json`, `logging`, `hashlib`, `getpas
 
 ### 1. Download the script
 
-Save `nios_health_check_final.py` to a working directory on your local machine.
+Save `nios_health_check.py` to a working directory on your local machine.
 
 ### 2. (Recommended) Create a Python virtual environment
 
@@ -96,7 +96,7 @@ pip install requests urllib3
 ### 4. Verify the installation
 
 ```bash
-python nios_health_check_final.py --help
+python nios_health_check.py --help
 ```
 
 You should see a list of available command-line options.
@@ -110,7 +110,7 @@ You should see a list of available command-line options.
 Run the script with no arguments and it will prompt you for everything it needs:
 
 ```bash
-python nios_health_check_final.py
+python nios_health_check.py
 ```
 
 You will be asked for:
@@ -120,10 +120,12 @@ You will be asked for:
 3. WAPI password (hidden input)
 4. Whether to bypass TLS verification (only if your Grid uses a self-signed certificate)
 5. Whether to **include Member IP Addresses in the output** (new — see below)
-6. Customer name
-7. Employee count
-8. Geographic region (`EMEA`, `AMS`, or `APJ`)
-9. User/SE name
+6. Whether to include the Grid Member Database Capacity Report
+7. Whether to include the DNS Topology Visualization
+8. Customer name
+9. Employee count
+10. Geographic region (`EMEA`, `AMS`, or `APJ`)
+11. User/SE name
 
 ### Member IP Address opt-in
 
@@ -148,7 +150,7 @@ You can also skip the prompt by passing one of:
 Any prompt can be pre-filled via a command-line argument. This is useful for scheduled or scripted runs.
 
 ```bash
-python nios_health_check_final.py \
+python nios_health_check.py \
     --grid-ip 10.10.10.10 \
     --username admin \
     --customer "Acme Corp" \
@@ -179,8 +181,11 @@ python nios_health_check_final.py \
 | `--silent-warnings` | Suppress TLS warning messages |
 | `--include-ip` | Include Member IP addresses in column F (skips the interactive IP prompt) |
 | `--no-include-ip` | Exclude Member IP addresses (skips the interactive IP prompt) |
+| `--capacity-report` | Generate Grid Member Capacity Excel Report. Skips the interactive prompt. |
+| `--no-capacity-report` | Skip the Grid Member Capacity Report and its interactive prompt.|
+| `--topology-viz` | Generate a self-contained DNS Topology Visualization HTML File showing primary/secondary/forwarder/delegated/stub relationships. |
+| `--no-topology-viz` | Skip the DNS Topology Visualization and its interactive prompt. |
 | `--debug` | Enable verbose debug logging |
-
 ---
 
 ## Outputs
