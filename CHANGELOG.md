@@ -1,9 +1,39 @@
-
 # Changelog
 
 All notable changes to the **Infoblox NIOS Grid Health Check** script are documented here.
 
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions correspond to the `Production vXX` tag in the script header.
+
+---
+
+## [v27] — 2026-09-02
+
+### Fixed
+- **Member IP (column F) was blank for grid members that do not run the DNS service** (e.g. Reporting appliances / IB-V5005, Network Insight / Discovery appliances / ND-V906). Root cause: the IP lookup relied solely on the `member:dns` WAPI object, which only returns an entry for members with the DNS service present; the intended fallback (parsing an IP out of `capacityreport._ref`) never worked because that `_ref` ends in the member's host name, not an IP address.
+
+### Added
+- New `InfobloxClient.get_member_vip_map()`, sourced from `member.vip_setting`, which is universal across every grid member type regardless of which services (DNS/DHCP) it runs. Column F now resolves via a 3-tier fallback: `member:dns` → `member.vip_setting` → `capacityreport._ref` (legacy).
+- Any member for which all three sources come back empty is now logged as a **WARNING** (previously silent) so gaps are visible in the run log.
+
+---
+
+## [v26] — 2026-08-XX
+
+### Added
+- Name Server Groups, external name servers, and Response Policy Zones (`zone_rp`) to the Section 3 DNS topology visualization.
+
+---
+
+## [v25] — 2026-07-XX
+
+### Changed
+- **Combined what previously shipped as three files** (`nios_health_check.py`, `nios_grid_capacity_module.py`, `nios_topology_viz.py`) into this single file, so it can be reviewed and approved as one script.
+- `HEADER_43`, `write_excel()`, `write_csv()`, and the `summary.json` schema are unchanged, so the existing health check portal upload workflow keeps working exactly as before.
+
+### Added
+- New, additive-only CLI flags, both default **OFF**:
+  - `--capacity-report` — Section 2: separate Grid Member Capacity workbook.
+  - `--topology-viz` — Section 3: separate DNS topology HTML page.
 
 ---
 
