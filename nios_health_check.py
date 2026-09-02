@@ -83,7 +83,7 @@ v26 changes vs v25:
     Zones (zone_rp) to the Section 3 DNS topology visualization.
 
 v25 changes vs v24:
-  - Combined what previously shipped as three files (nios_health_check_final.py,
+  - Combined what previously shipped as three files (nios_health_check.py,
     nios_grid_capacity_module.py, nios_topology_viz.py) into this single
     file, so it can be reviewed and approved as one script.
   - NEW, additive only, both default OFF:
