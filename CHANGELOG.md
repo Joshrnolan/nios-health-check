@@ -6,6 +6,24 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ---
 
+## [v28] — 2026-09-03
+
+### Added
+- **New Section 4 — Grid License Report (`--license-report` / `--no-license-report`)**. Collects Grid-Wide license entries (`license:gridwide`) and per-member license entries (`member:license`, already fetched by the core report — no additional WAPI calls), and writes separate `<run>_license_report.xlsx`, `.csv`, and `.json` files, one row per license entry, with:
+  - `Scope` (`Grid Wide` or `Member`), `Member Name`, `Member IP` (populated only when Member IP collection is enabled, otherwise blank), `Hardware ID` / `Serial Number` (the WAPI `hwid` for that license, blank for Grid-Wide entries), `License Type`, `Kind`, `Limit`, `Expiration Status`, `Expiry Date`.
+  - Every `Expiry Date` is converted from the raw WAPI epoch value into a human-readable text string (or `"Permanent"` / `"N/A"`) via new `_format_expiry_date()` / `_format_license_entry()` helpers, instead of being left as a raw epoch integer.
+  - The `.xlsx` file is skipped (with a warning) if `openpyxl` is not installed; the `.csv` and `.json` files are always written.
+  - New `InfobloxClient.get_global_licenses_detailed()` for the full Grid-Wide license record set.
+  - Same "prompt unless flagged" interactive/CLI pattern as the other add-ons: `--license-report` / `--no-license-report`.
+- **Section 3 (`--topology-viz`) now also writes a plain `<run>_topology.json` file** alongside the existing `<run>_topology.html` page, containing the same `nodes`/`links`/`zone_counts` topology database used to render the HTML graph, so other/3rd-party tooling can consume the DNS topology data directly without parsing HTML. `generate_topology_viz()` now returns a `(html_path, json_path)` tuple.
+
+### Changed
+- `gather_connection_info()` now also returns the License Report toggle; `collect_and_report()`'s `summary.json` gains a `license_report` field alongside the existing `capacity_report` / `topology_viz` fields.
+- `generate_license_report()` now returns a list of written file paths instead of a single path.
+
+
+---
+
 ## [v27] — 2026-09-02
 
 ### Fixed
