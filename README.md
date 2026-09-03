@@ -32,7 +32,7 @@ The core Health Check report gathers information such as:
 - NIOS object counts, smart folders, and admin user counts
 - Per-node CPU, memory, and disk utilization
 
-On top of that core report, two **optional, opt-in add-on reports** are available — see [Optional Add-On Reports](#optional-add-on-reports) below.
+On top of that core report, three **optional, opt-in add-on reports** are available — see [Optional Add-On Reports](#optional-add-on-reports) below.
 
 ## Why This Exists
 
@@ -44,7 +44,7 @@ It is intentionally **read-only** — it only performs `GET` calls against the W
 
 ## Optional Add-On Reports
 
-The script ships as a **single file** with two clearly-labeled, optional sections that reuse the same authenticated WAPI session as the core Health Check — no second login, no extra credentials, and neither one ever touches the core report's output files.
+The script ships as a **single file** with three clearly-labeled, optional sections that reuse the same authenticated WAPI session as the core Health Check — no second login, no extra credentials, and none of them ever touches the core report's output files.
 
 ### Grid Member Capacity Report (`--capacity-report`)
 
@@ -61,9 +61,22 @@ Collects authoritative, delegated, forward, and stub zones, plus Name Server Gro
 
 The file has no server component — open it in any browser. The only remote resource it references is the [ECharts](https://echarts.apache.org/) charting library from a public CDN (`cdn.jsdelivr.net`), loaded by the browser only when the generated HTML file is opened; the Python script itself never fetches or executes it.
 
+This section also writes a plain `<run>_topology.json` file containing the same nodes/links/zone_counts data used to render the HTML page, so the topology database can be consumed directly by other/3rd-party tooling without parsing the HTML file.
+
 This section is adapted from **ddi_collect.py / ddi_dashboard.html** (part of the NIOS DDI Dashboard tool) by Bobby Cooper (MIT License) — see [License & Attribution](#license--attribution).
 
-Both add-ons default to **OFF** and can be triggered interactively or via CLI flags — see [Command-line options](#command-line-options).
+### Grid License Report (`--license-report`)
+
+Collects Grid-Wide license entries (from `license:gridwide`) and per-member license entries (from `member:license`, already gathered by the core report), then writes **separate** `<run>_license_report.xlsx`, `.csv`, and `.json` files, one row per license entry, with:
+
+- **Scope** — `Grid Wide` or `Member`.
+- **Member Name** / **Member IP** — blank for Grid Wide rows; Member IP is populated only when Member IP collection is enabled, otherwise left blank.
+- **Hardware ID** / **Serial Number** — the WAPI `hwid` for that license entry (blank for Grid Wide licenses, which have no `hwid`).
+- **License Type**, **Kind**, **Limit**, **Expiration Status**, **Expiry Date**.
+
+Every Expiry Date value is converted from the raw WAPI epoch integer into a human-readable text string (e.g. `2027-04-30 00:00:00`), or `Permanent` / `N/A` when not applicable, before being written out. This section makes no additional WAPI calls — it reuses the license data already collected by the core report. The `.xlsx` file is skipped (with a warning) if `openpyxl` is not installed; the `.csv` and `.json` files are always written.
+
+All three add-ons default to **OFF** and can be triggered interactively or via CLI flags — see [Command-line options](#command-line-options).
 
 ---
 
@@ -148,10 +161,11 @@ You will be asked for:
 5. Whether to **include Member IP Addresses in the output**
 6. Whether to include the **Grid Member Database Capacity Report**
 7. Whether to include the **DNS Topology Visualization**
-8. Customer name
-9. Employee count
-10. Geographic region (`EMEA`, `AMS`, or `APJ`)
-11. User/SE name
+8. Whether to include the **Grid License Report**
+9. Customer name
+10. Employee count
+11. Geographic region (`EMEA`, `AMS`, or `APJ`)
+12. User/SE name
 
 ### Member IP Address opt-in
 
@@ -180,18 +194,20 @@ You can also skip the prompt by passing one of:
 
 ### Optional add-on reports
 
-The Capacity Report and Topology Visualization each follow the same "prompt unless flagged" pattern as Member IP:
+The Capacity Report, Topology Visualization, and License Report each follow the same "prompt unless flagged" pattern as Member IP:
 
 ```
 Include Grid Member Database Capacity report (y/n) [n]:
 Include DNS Topology Visualization (y/n) [n]:
+Include Grid License Report (y/n) [n]:
 ```
 
-Skip either prompt with:
+Skip any of these prompts with:
 
 ```bash
---capacity-report / --no-capacity-report
---topology-viz    / --no-topology-viz
+--capacity-report  / --no-capacity-report
+--topology-viz     / --no-topology-viz
+--license-report   / --no-license-report
 ```
 
 ### Non-interactive run
@@ -209,6 +225,7 @@ python nios_health_check.py \
     --include-ip \
     --capacity-report \
     --topology-viz \
+    --license-report \
     --format both
 ```
 
@@ -234,8 +251,10 @@ python nios_health_check.py \
 | `--no-include-ip` | Exclude Member IP addresses (skips the interactive IP prompt) |
 | `--capacity-report` | Generate the Grid Member Capacity Excel Report. Skips the interactive prompt. |
 | `--no-capacity-report` | Skip the Grid Member Capacity Report and its interactive prompt. |
-| `--topology-viz` | Generate a self-contained DNS Topology Visualization HTML file showing primary/secondary/forwarder/delegated/stub/NSG relationships. |
+| `--topology-viz` | Generate a self-contained DNS Topology Visualization HTML file (plus a `_topology.json` data file) showing primary/secondary/forwarder/delegated/stub/NSG relationships. |
 | `--no-topology-viz` | Skip the DNS Topology Visualization and its interactive prompt. |
+| `--license-report` | Generate the Grid License Report (`.xlsx` + `.csv` + `.json`, Grid-Wide + per-member licenses). Skips the interactive prompt. |
+| `--no-license-report` | Skip the Grid License Report and its interactive prompt. |
 | `--debug` | Enable verbose debug logging |
 
 ---
@@ -263,8 +282,12 @@ If you enabled the optional add-ons, you'll also find:
 |------|-------------|
 | `nios_health_audit_<timestamp>_grid_capacity.xlsx` | Only written when `--capacity-report` (or its prompt) is enabled. "Capacity Summary" and "Object Counts" sheets — see [Optional Add-On Reports](#optional-add-on-reports) |
 | `nios_health_audit_<timestamp>_topology.html` | Only written when `--topology-viz` (or its prompt) is enabled. Self-contained, browser-openable DNS relationship map |
+| `nios_health_audit_<timestamp>_topology.json` | Only written when `--topology-viz` (or its prompt) is enabled. Plain JSON export of the same nodes/links/zone_counts topology database, for consumption by other/3rd-party tooling |
+| `nios_health_audit_<timestamp>_license_report.xlsx` | Only written when `--license-report` (or its prompt) is enabled and `openpyxl` is installed. One row per license entry (Grid-Wide + per-member), with human-readable expiry dates |
+| `nios_health_audit_<timestamp>_license_report.csv` | Only written when `--license-report` (or its prompt) is enabled. Same rows as the `.xlsx` file |
+| `nios_health_audit_<timestamp>_license_report.json` | Only written when `--license-report` (or its prompt) is enabled. Grid-Wide and per-member license data, with human-readable expiry dates |
 
-Both add-on files are written alongside the core report in the same directory and never modify it.
+All add-on files are written alongside the core report in the same directory and never modify it.
 
 Each row in the core report represents a single physical node. For HA pairs, both the active and passive nodes are reported as separate rows, keyed by their hardware ID.
 
@@ -284,11 +307,11 @@ The version check and endpoint selection are handled automatically — no flags 
 
 ## How It Works (High-Level)
 
-1. **Prompt & Connect** — The script collects the Grid IP, credentials, TLS preference, the IP-inclusion choice, and the two add-on toggles (Capacity Report / Topology Visualization), plus customer context; then auto-detects the latest WAPI version supported by your Grid.
+1. **Prompt & Connect** — The script collects the Grid IP, credentials, TLS preference, the IP-inclusion choice, and the three add-on toggles (Capacity Report / Topology Visualization / License Report), plus customer context; then auto-detects the latest WAPI version supported by your Grid.
 2. **Verify** — It performs a lightweight connectivity test before doing any real work.
 3. **Collect** — Using a series of read-only WAPI calls, it gathers Grid identity, Grid UUID (or License UID fallback), members, licenses, DNS/DHCP settings, object counts, and per-node performance metrics. If you opted in to Member IPs, it resolves column F via the 3-tier `member:dns` → `member.vip_setting` → `capacityreport._ref` fallback. If enabled, it also collects per-member capacity data (Section 2) and zone/name-server/NSG/RPZ data (Section 3), all on the same authenticated session.
 4. **Process** — For each Grid member, it walks through all associated nodes (including HA pairs), matches license records by hardware ID, and builds a structured row of data.
-5. **Report** — It writes the core Excel workbook, CSV file, and JSON summary (including SHA-256 hashes of each output file for integrity), plus the standalone Capacity workbook and/or Topology HTML file if requested.
+5. **Report** — It writes the core Excel workbook, CSV file, and JSON summary (including SHA-256 hashes of each output file for integrity), plus the standalone Capacity workbook, Topology HTML/JSON files, and/or License Report XLSX/CSV/JSON files if requested (Section 4 reuses the license data already collected in step 3 — no extra WAPI calls).
 6. **Log Out** — It gracefully terminates the WAPI session.
 
 The entire process is **read-only** — no `POST`, `PUT`, or `DELETE` calls are ever issued against your Grid (the only `POST` is the final `logout` call, which simply releases the session token).

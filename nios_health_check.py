@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Infoblox NIOS Grid Health Audit (Production v27 - single-file edition)
+Infoblox NIOS Grid Health Audit (Production v28 - single-file edition)
 ------------------------------------------------------------------------
 SINGLE-FILE EDITION: this script is intentionally self-contained (no other
 .py files required) so a customer's security team can review one file
@@ -40,7 +40,19 @@ banners below to jump to each part)
       Python script and never calls out to any network endpoint from
       Python. Never touches the Section 1 output files.
 
-SECURITY / NETWORK SUMMARY (applies to all three sections)
+  SECTION 4 - OPTIONAL: GRID LICENSE REPORT (--license-report)
+      Reuses the SAME authenticated, read-only WAPI session opened in
+      Section 1, and the SAME `license:gridwide` / `member:license` GET
+      results already retrieved by Section 1 (no additional WAPI calls).
+      Writes SEPARATE `<run>_license_report.xlsx`, `.csv`, and `.json`
+      files, one row per license entry, covering Grid-Wide license entries
+      plus one row per Grid member (member name, member IP address when IP
+      collection was enabled, and Hardware ID / Serial Number). Every
+      license `expiry_date` is converted from its raw WAPI epoch value
+      into a human-readable text string (or "Permanent"/"N/A") before
+      being written out. Never touches the Section 1 output files.
+
+SECURITY / NETWORK SUMMARY (applies to all four sections)
 ------------------------------------------------------------------------
   * Every WAPI call made by this script is an HTTP GET. The ONLY
     exception is a single HTTP POST to the WAPI `logout` endpoint at the
@@ -62,6 +74,20 @@ SECURITY / NETWORK SUMMARY (applies to all three sections)
     file - it is not fetched or executed by this Python script. Review the
     constant directly (search "TOPOLOGY_HTML_TEMPLATE = r\"\"\"") if your
     policy requires vetting that beforehand.
+
+v28 changes vs v27:
+  - NEW, additive only, default OFF: --license-report, Section 4. Writes
+    separate <run>_license_report.xlsx, .csv, and .json files, one row per
+    license entry, covering Grid-Wide licenses and per-member license data
+    (member name + IP, when IP collection is enabled, plus Hardware ID /
+    Serial Number). Reuses the license data already fetched in Section 1 -
+    no new WAPI calls. Every expiry_date is stored as a human-readable text
+    string instead of a raw epoch value.
+  - NEW: Section 3 (--topology-viz) now also writes the underlying
+    zone/name-server relationship graph as a plain <run>_topology.json
+    file (in addition to the existing <run>_topology.html page), so the
+    topology data can be consumed directly by other/3rd-party tooling
+    without parsing the HTML file.
 
 v27 changes vs v26:
   - FIX: Member IP (column F) was blank for grid members that do not run the
@@ -117,7 +143,7 @@ import os
 from logging.handlers import RotatingFileHandler
 import re
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -168,7 +194,7 @@ HEADER_43: List[str] = [
 class JsonLineFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload = {
-            "ts":     datetime.utcnow().isoformat() + "Z",
+            "ts":     datetime.now(timezone.utc).isoformat(),
             "level":  record.levelname,
             "msg":    record.getMessage(),
             "logger": record.name,
@@ -210,7 +236,7 @@ def make_session(verify_ssl: Any, proxies: Optional[Dict[str, str]] = None) -> r
     return session
 
 # ------------------------- Connection Prompt -------------------------
-def gather_connection_info(args: argparse.Namespace) -> Tuple[str, str, str, bool, bool, bool, bool]:
+def gather_connection_info(args: argparse.Namespace) -> Tuple[str, str, str, bool, bool, bool, bool, bool]:
     grid_ip = getattr(args, "grid_ip", "") or ""
     while not grid_ip:
         grid_ip = input("Grid Manager IP/Hostname: ").strip()
@@ -259,7 +285,15 @@ def gather_connection_info(args: argparse.Namespace) -> Tuple[str, str, str, boo
     else:
         topology_viz = bool(topology_viz_arg)
 
-    return grid_ip, username, password, insecure, include_ip, capacity_report, topology_viz
+    # --- v28: Grid License Report toggle (Section 4), same pattern as above ---
+    license_report_arg = getattr(args, "license_report", None)
+    if license_report_arg is None:
+        ans = input("Include Grid License Report (y/n) [n]: ").strip().lower()
+        license_report = ans in ("y", "yes", "1", "true")
+    else:
+        license_report = bool(license_report_arg)
+
+    return grid_ip, username, password, insecure, include_ip, capacity_report, topology_viz, license_report
 
 def get_latest_wapi_version(
     grid_ip: str, username: str, password: str,
@@ -426,6 +460,20 @@ class InfobloxClient:
     def get_global_licenses(self) -> str:
         data = self._get("license:gridwide", {"_return_fields": "type"}) or []
         return ", ".join(sorted(set(l.get("type", "") for l in data if l.get("type"))))
+
+    # --------------------------------------------------------------
+    # NEW in v28: full Grid-Wide license detail (Section 4, --license-report)
+    # --------------------------------------------------------------
+    def get_global_licenses_detailed(self) -> List[Dict[str, Any]]:
+        """Returns the full license:gridwide records used by the Section 4
+        license report (type, expiration_status, expiry_date, limit, kind).
+        """
+        data = self._get(
+            "license:gridwide",
+            {"_return_fields": "type,expiration_status,expiry_date,limit,kind"},
+        ) or []
+        self.logger.info(f"get_global_licenses_detailed: {len(data)} grid-wide license(s) found")
+        return data
 
     def get_grid_members(self) -> List[Dict[str, Any]]:
         # ipv4addr excluded on member — causes 400 on WAPI v2.14; we use member:dns instead.
@@ -1276,8 +1324,10 @@ var DDI_DATA = __TOPOLOGY_JSON__;
 
 
 def generate_topology_viz(client: "InfobloxClient", out_dir: str, base_name: str,
-                           logger: logging.Logger) -> Optional[str]:
-    """Collect zone relationships and write a self-contained topology HTML page.
+                           logger: logging.Logger) -> Tuple[Optional[str], Optional[str]]:
+    """Collect zone relationships and write a self-contained topology HTML page,
+    plus a plain JSON file with the same data for consumption by other/3rd-party
+    tooling (v28).
 
     Args:
         client: the InfobloxClient already authenticated in Section 1.
@@ -1287,7 +1337,7 @@ def generate_topology_viz(client: "InfobloxClient", out_dir: str, base_name: str
         logger: the shared logger opened in Section 1.
 
     Returns:
-        The path to the written .html file.
+        A (html_path, json_path) tuple for the two files written.
     """
     zones = _collect_zone_data(client, logger)
     topology = build_topology(zones["auth"], zones["delegated"], zones["forward"], zones["stub"],
@@ -1317,22 +1367,212 @@ def generate_topology_viz(client: "InfobloxClient", out_dir: str, base_name: str
     with open(out_path, "w", encoding="utf-8") as fh:
         fh.write(html)
 
+    # v28: plain JSON export of the same nodes/links/zone_counts payload, so
+    # 3rd-party apps can consume the topology database directly without
+    # scraping/parsing the generated HTML page.
+    json_path = os.path.join(out_dir, f"{base_name}_topology.json")
+    with open(json_path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
+
     logger.info(f"[topology-viz] wrote {len(topology['nodes'])} node(s), "
-                f"{len(topology['links'])} link(s) to {out_path}")
-    return out_path
+                f"{len(topology['links'])} link(s) to {out_path} and {json_path}")
+    return out_path, json_path
 
 # =============================================================================
 # END SECTION 3 - OPTIONAL: DNS TOPOLOGY VISUALIZATION
 # =============================================================================
 
 # =============================================================================
+# SECTION 4 - OPTIONAL: GRID LICENSE REPORT  (--license-report)
+# ------------------------------------------------------------------------
+# Network footprint: ZERO additional WAPI calls. This section reuses the
+# license:gridwide summary and member:license (per-hwid) results already
+# collected unconditionally in Section 1 (grid_lics_detailed /
+# licenses_by_hwid), plus the member list and member IP maps already
+# collected there when --include-ip is in effect.
+#
+# Output: writes its OWN separate files, <run>_license_report.xlsx and
+# <run>_license_report.csv (plus <run>_license_report.json), one row per
+# license entry:
+#   - Scope           "Grid Wide" or "Member"
+#   - Member Name     blank for Grid Wide rows
+#   - Member IP       populated only when IP collection was enabled
+#   - Hardware ID / Serial Number   the WAPI hwid for that license (blank
+#     for Grid-Wide licenses, which have no hwid)
+#   - License Type / Kind / Limit / Expiration Status / Expiry Date
+# Every Expiry Date value is converted from the raw WAPI epoch integer into
+# a human-readable text string (or "Permanent"/"N/A") before being written
+# out. Never reads or writes the Section 1 output files, HEADER_43,
+# write_excel(), or write_csv(). Runs only when --license-report is passed;
+# a failure here is caught and logged without aborting or altering the
+# Section 1 report.
+# =============================================================================
+
+LICENSE_REPORT_HEADER = [
+    "Scope", "Member Name", "Member IP", "Hardware ID", "Serial Number",
+    "License Type", "Kind", "Limit", "Expiration Status", "Expiry Date",
+]
+
+
+def _format_expiry_date(value: Any) -> str:
+    """Convert a raw WAPI license expiry_date (epoch seconds) into a
+    human-readable text string. Non-expiring/absent values become
+    "Permanent"; anything unparsable becomes "N/A"."""
+    try:
+        epoch = int(value)
+    except (TypeError, ValueError):
+        return "N/A"
+    if epoch <= 0:
+        return "Permanent"
+    try:
+        return datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M:%S")
+    except (OverflowError, OSError, ValueError):
+        return "N/A"
+
+
+def _format_license_entry(lic: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of a raw license:gridwide / member:license record with
+    expiry_date replaced by its human-readable text form. hwid (the WAPI
+    Hardware ID, also used elsewhere in this script as the member Serial
+    Number) is preserved so it can be reported per license."""
+    entry = {k: v for k, v in lic.items() if k != "_ref"}
+    entry["expiry_date"] = _format_expiry_date(lic.get("expiry_date"))
+    return entry
+
+
+def _license_report_rows(payload: Dict[str, Any]) -> List[List[Any]]:
+    """Flatten the license_report payload into one row per license entry,
+    matching LICENSE_REPORT_HEADER. Members with no licenses still get one
+    row so every Grid member is represented in the report."""
+    rows: List[List[Any]] = []
+    for lic in payload["grid_wide"]:
+        rows.append([
+            "Grid Wide", "", "", lic.get("hwid", ""), lic.get("hwid", ""),
+            lic.get("type", ""), lic.get("kind", ""),
+            lic.get("limit", ""), lic.get("expiration_status", ""), lic.get("expiry_date", ""),
+        ])
+    for member in payload["members"]:
+        licenses = member.get("licenses") or [{}]
+        for lic in licenses:
+            rows.append([
+                "Member", member.get("member_name", ""), member.get("member_ip", ""),
+                lic.get("hwid", ""), lic.get("hwid", ""),
+                lic.get("type", ""), lic.get("kind", ""), lic.get("limit", ""),
+                lic.get("expiration_status", ""), lic.get("expiry_date", ""),
+            ])
+    return rows
+
+
+def generate_license_report(
+    grid_wide_licenses: List[Dict[str, Any]],
+    licenses_by_hwid: Dict[str, List[Dict[str, Any]]],
+    members: List[Dict[str, Any]],
+    include_ip: bool,
+    member_ip_map: Dict[str, str],
+    member_vip_map: Dict[str, str],
+    out_dir: str, base_name: str, logger: logging.Logger,
+) -> List[str]:
+    """Build and write the Grid-Wide + per-member license report as XLSX, CSV,
+    and JSON files.
+
+    Args:
+        grid_wide_licenses: raw license:gridwide records (Section 1).
+        licenses_by_hwid: raw member:license records keyed by hwid (Section 1).
+        members: raw `member` WAPI records (Section 1), used to map each
+            node's hwid back to its parent member's host_name.
+        include_ip: whether the user opted in to IP collection; member_ip is
+            left "" for every member when False.
+        member_ip_map: {host_name: ipv4addr} from member:dns (Section 1).
+        member_vip_map: {host_name: ipv4addr} from member.vip_setting (Section 1).
+        out_dir: the run's timestamped output directory (Section 1).
+        base_name: the run's base file name; the report is written alongside
+            the Section 1 report with a `_license_report` suffix.
+        logger: the shared logger opened in Section 1.
+
+    Returns:
+        A list of paths to the files actually written (.xlsx is skipped if
+        openpyxl is not installed).
+    """
+    hwid_to_host: Dict[str, str] = {}
+    for m in members:
+        host = m.get("host_name", "")
+        for node in m.get("node_info", []) or []:
+            hwid = node.get("hwid")
+            if hwid:
+                hwid_to_host[hwid] = host
+
+    member_licenses: defaultdict = defaultdict(list)
+    for hwid, lics in licenses_by_hwid.items():
+        host = hwid_to_host.get(hwid)
+        if not host:
+            continue
+        member_licenses[host].extend(_format_license_entry(lic) for lic in lics)
+
+    members_out: List[Dict[str, Any]] = []
+    for m in members:
+        host = m.get("host_name", "")
+        member_ip = (member_ip_map.get(host) or member_vip_map.get(host) or "") if include_ip else ""
+        members_out.append({
+            "member_name": host,
+            "member_ip": member_ip,
+            "licenses": member_licenses.get(host, []),
+        })
+
+    payload = {
+        "grid_wide": [_format_license_entry(lic) for lic in grid_wide_licenses],
+        "members": members_out,
+    }
+    rows = _license_report_rows(payload)
+
+    written: List[str] = []
+
+    if XLSX_AVAILABLE:
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "License Report"
+        for ci, h in enumerate(LICENSE_REPORT_HEADER, 1):
+            ws.cell(row=1, column=ci, value=h)
+        for ri, row in enumerate(rows, 2):
+            for ci, val in enumerate(row, 1):
+                ws.cell(row=ri, column=ci, value=val)
+        for ci in range(1, len(LICENSE_REPORT_HEADER) + 1):
+            ws.column_dimensions[get_column_letter(ci)].width = 20
+        xlsx_path = os.path.join(out_dir, f"{base_name}_license_report.xlsx")
+        wb.save(xlsx_path)
+        written.append(xlsx_path)
+    else:
+        logger.warning("[license-report] openpyxl not installed \u2014 skipping license report .xlsx output.")
+
+    csv_path = os.path.join(out_dir, f"{base_name}_license_report.csv")
+    with open(csv_path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(LICENSE_REPORT_HEADER)
+        w.writerows(rows)
+    written.append(csv_path)
+
+    json_path = os.path.join(out_dir, f"{base_name}_license_report.json")
+    with open(json_path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
+    written.append(json_path)
+
+    logger.info(f"[license-report] wrote {len(payload['grid_wide'])} grid-wide and "
+                f"{sum(len(m['licenses']) for m in members_out)} member license entries "
+                f"across {len(members_out)} member(s) to {', '.join(written)}")
+    return written
+
+# =============================================================================
+# END SECTION 4 - OPTIONAL: GRID LICENSE REPORT
+# =============================================================================
+
+# =============================================================================
 # MAIN ORCHESTRATION
 # ------------------------------------------------------------------------
 # Runs Section 1 (the standard health check) end-to-end, then optionally
-# invokes Section 2 and/or Section 3 using the SAME authenticated `client`
-# from Section 1 if the corresponding flag was passed. The Section 1
-# output block (write_excel/write_csv/summary.json) is emitted first and
-# is completely unaffected by whether the optional sections run or fail.
+# invokes Section 2, Section 3, and/or Section 4 using the SAME
+# authenticated `client` from Section 1 if the corresponding flag was
+# passed. The Section 1 output block (write_excel/write_csv/summary.json)
+# is emitted first and is completely unaffected by whether the optional
+# sections run or fail.
 # =============================================================================
 def collect_and_report(args: argparse.Namespace) -> None:
     ts      = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1348,7 +1588,7 @@ INFOBLOX HEALTH CHECK DATA COLLECTION
 Please provide the following information:
 ------------------------------------------------------------""")
 
-    grid_ip, username, password, insecure, include_ip, capacity_report, topology_viz = gather_connection_info(args)
+    grid_ip, username, password, insecure, include_ip, capacity_report, topology_viz, license_report = gather_connection_info(args)
     verify_ssl = not insecure
 
     customer  = args.customer or input("Customer Name: ").strip() or "General"
@@ -1359,7 +1599,8 @@ Please provide the following information:
     print("------------------------------------------------------------\n")
     print(f"Include Member IP Addresses in output: {'YES' if include_ip else 'NO'}")
     print(f"Include Grid Member Database Capacity report: {'YES' if capacity_report else 'NO'}")
-    print(f"Include DNS Topology Visualization: {'YES' if topology_viz else 'NO'}\n")
+    print(f"Include DNS Topology Visualization: {'YES' if topology_viz else 'NO'}")
+    print(f"Include Grid License Report: {'YES' if license_report else 'NO'}\n")
 
     if not verify_ssl or args.silent_warnings:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -1586,15 +1827,15 @@ Please provide the following information:
         print(f"Created: {cp}")
 
     # ------------------------------------------------------------------
-    # OPTIONAL ENHANCEMENTS (Section 2 / Section 3) — additive only.
+    # OPTIONAL ENHANCEMENTS (Section 2 / Section 3 / Section 4) — additive only.
     # Everything above this point (HEADER_43, write_excel(), write_csv(),
     # the .xlsx/.csv files, and the summary.json written below) is
     # completely unchanged, so the standard health check portal upload
-    # workflow keeps working exactly as before. These two blocks only run
-    # when explicitly requested via --capacity-report / --topology-viz,
-    # reuse the already-authenticated `client` session opened above, and
-    # write their own separate files. A failure in either one is logged
-    # but never aborts or alters the Section 1 report.
+    # workflow keeps working exactly as before. These blocks only run
+    # when explicitly requested via --capacity-report / --topology-viz /
+    # --license-report, reuse the already-authenticated `client` session
+    # opened above, and write their own separate files. A failure in any
+    # one of them is logged but never aborts or alters the Section 1 report.
     # ------------------------------------------------------------------
     if capacity_report:
         print("\n================================================================================")
@@ -1613,17 +1854,37 @@ Please provide the following information:
         print("OPTIONAL: DNS TOPOLOGY VISUALIZATION (Section 3)")
         print("================================================================================\n")
         try:
-            topo_path = generate_topology_viz(client, out_dir, base_name, logger)
-            if topo_path:
-                created_files.append(topo_path)
-                print(f"Created: {topo_path}")
+            topo_html_path, topo_json_path = generate_topology_viz(client, out_dir, base_name, logger)
+            if topo_html_path:
+                created_files.append(topo_html_path)
+                print(f"Created: {topo_html_path}")
+            if topo_json_path:
+                created_files.append(topo_json_path)
+                print(f"Created: {topo_json_path}")
         except Exception as e:
             logger.error(f"Topology visualization failed: {e}")
+
+    if license_report:
+        print("\n================================================================================")
+        print("OPTIONAL: GRID LICENSE REPORT (Section 4)")
+        print("================================================================================\n")
+        try:
+            grid_lics_detailed = client.get_global_licenses_detailed()
+            lic_paths = generate_license_report(
+                grid_lics_detailed, licenses_by_hwid, members, include_ip,
+                member_ip_map, member_vip_map, out_dir, base_name, logger,
+            )
+            for lic_path in lic_paths:
+                created_files.append(lic_path)
+                print(f"Created: {lic_path}")
+        except Exception as e:
+            logger.error(f"Grid license report failed: {e}")
 
     summary = {
         "grid_ip": grid_ip, "api_version": api_ver, "grid_name": grid_name,
         "grid_uuid": grid_uuid, "include_ip": include_ip,
         "capacity_report": capacity_report, "topology_viz": topology_viz,
+        "license_report": license_report,
         "member_count": len(members), "row_count": len(results),
         "views": grid_counts["views"], "admins": grid_counts["admins"],
         "folders": grid_counts["folders"], "has_nsg": grid_counts["has_nsg"],
@@ -1690,6 +1951,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         "the standard 43-column health check report.")
     p.add_argument("--no-topology-viz", dest="topology_viz", action="store_false",
                    help="Skip the DNS Topology Visualization and its interactive prompt.")
+    # --- v28: optional, additive-only Grid License Report (Section 4) ---
+    p.add_argument("--license-report", dest="license_report", action="store_true",
+                   default=None,
+                   help="Also generate a separate Grid License Report JSON file "
+                        "(Section 4) with Grid-Wide and per-member license data. "
+                        "Skips the interactive prompt. Does not modify the standard "
+                        "43-column health check report.")
+    p.add_argument("--no-license-report", dest="license_report", action="store_false",
+                   help="Skip the Grid License Report and its interactive prompt.")
     return p
 
 if __name__ == "__main__":
