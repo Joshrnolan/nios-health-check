@@ -470,7 +470,7 @@ class InfobloxClient:
         """
         data = self._get(
             "license:gridwide",
-            {"_return_fields": "type,expiration_status,expiry_date,limit,kind"},
+            {"_return_fields": "type,expiration_status,expiry_date,limit"},
         ) or []
         self.logger.info(f"get_global_licenses_detailed: {len(data)} grid-wide license(s) found")
         return data
