@@ -13,6 +13,37 @@
 
 ---
 
+## Python and PowerShell editions
+
+This repository maintains both editions. The [Python script](nios_health_check.py) is the reference implementation. The [PowerShell edition](powershell/README.md) runs on Windows PowerShell 5.1 or PowerShell 7+ without extra modules. It writes CSV and JSON reports, plus HTML when you enable DNS topology. Use Python for Excel output.
+
+From the repository root, run the PowerShell script and follow the prompts:
+
+```powershell
+.\powershell\Nios-HealthCheck.ps1
+```
+
+To supply values and select reports on the command line:
+
+```powershell
+.\powershell\Nios-HealthCheck.ps1 -GridIp 'grid.example.com' -Username 'healthcheck' `
+    -Customer 'Example Customer' -Employees 2500 -Geo AMS -User 'Jane Doe' `
+    -NoIncludeIp -CapacityReport -TopologyViz -LicenseReport
+```
+
+The script prompts for the WAPI password if you omit `-Password`.
+
+| Option | Python | PowerShell |
+|---|---|---|
+| Include or exclude member IPs | `--include-ip` / `--no-include-ip` | `-IncludeIp` / `-NoIncludeIp` |
+| Run or skip the capacity report | `--capacity-report` / `--no-capacity-report` | `-CapacityReport` / `-NoCapacityReport` |
+| Run or skip the DNS topology visualization | `--topology-viz` / `--no-topology-viz` | `-TopologyViz` / `-NoTopologyViz` |
+| Run or skip the license report | `--license-report` / `--no-license-report` | `-LicenseReport` / `-NoLicenseReport` |
+
+See the [PowerShell guide](powershell/README.md) for setup, the full parameter list, and output files. The rest of this README covers the Python edition.
+
+---
+
 ## Overview
 
 The **NIOS Grid Health Check** script is a lightweight, read-only utility that connects to an Infoblox NIOS Grid Manager and automatically collects the configuration and operational information typically gathered during a customer Health Check engagement.
