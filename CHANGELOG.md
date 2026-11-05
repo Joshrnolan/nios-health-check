@@ -1,8 +1,16 @@
 # Changelog
 
-All notable changes to the **Infoblox NIOS Grid Health Check** script are documented here.
+This changelog tracks changes to the **Infoblox NIOS Grid Health Check** project. See the [PowerShell changelog](powershell/CHANGELOG.md) for the port's release history.
 
-The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions correspond to the `Production vXX` tag in the script header.
+The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Python versions correspond to the `Production vXX` tag in the script header.
+
+## [Unreleased]
+
+### Added
+
+- Added the [PowerShell edition](powershell/README.md) alongside the Python reference implementation. Run `.\powershell\Nios-HealthCheck.ps1` from the repository root in Windows PowerShell 5.1 or PowerShell 7+.
+- PowerShell accepts `-GridIp` and `-Username` for connection details. Use `-IncludeIp`, `-CapacityReport`, `-TopologyViz`, and `-LicenseReport` to enable optional data and reports. Use `-NoIncludeIp`, `-NoCapacityReport`, `-NoTopologyViz`, and `-NoLicenseReport` to skip them.
+- The PowerShell edition writes a core CSV, a JSON summary, and a JSON Lines log. Optional output includes two capacity CSVs, topology HTML and JSON, and license CSV and JSON.
 
 ---
 
