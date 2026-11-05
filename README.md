@@ -40,7 +40,7 @@ The script prompts for the WAPI password if you omit `-Password`.
 | Run or skip the DNS topology visualization | `--topology-viz` / `--no-topology-viz` | `-TopologyViz` / `-NoTopologyViz` |
 | Run or skip the license report | `--license-report` / `--no-license-report` | `-LicenseReport` / `-NoLicenseReport` |
 
-See the [PowerShell guide](powershell/README.md) for setup, the full parameter list, and output files. The rest of this README covers the Python edition.
+See [Requirements](#requirements) and [Installation](#installation) for both editions. The [PowerShell guide](powershell/README.md) covers all PowerShell parameters and output files. The Usage and Outputs sections below cover Python.
 
 ---
 
@@ -113,19 +113,17 @@ All three add-ons default to **OFF** and can be triggered interactively or via C
 
 ## Requirements
 
-### System
+### Both editions
 
-- **Python**: 3.8 or newer
-- **Operating system**: macOS, Linux, or Windows
 - **Network access**: HTTPS (TCP/443) connectivity from the machine running the script to the Grid Manager
-
-### NIOS / WAPI
 
 - NIOS **8.x or 9.x** with the WAPI enabled (default)
 - A Grid admin account with **read permissions** sufficient to query the WAPI
   - The built-in `admin` account works, but a dedicated read-only service account is recommended
 
-### Python Dependencies
+### Python edition
+
+Python 3.8 or newer on Windows, macOS, or Linux.
 
 | Package      | Purpose                              | Required |
 |--------------|--------------------------------------|----------|
@@ -137,13 +135,22 @@ All other modules used (`argparse`, `csv`, `json`, `logging`, `hashlib`, `getpas
 
 ---
 
+### PowerShell edition
+
+- Windows PowerShell 5.1 on Windows, or PowerShell 7+ on Windows, macOS, or Linux.
+- The health check script requires no extra PowerShell modules or Python installation.
+
+---
+
 ## Installation
 
-### 1. Download the script
+### Python setup
+
+#### 1. Download the script
 
 Save `nios_health_check.py` to a working directory on your local machine.
 
-### 2. (Recommended) Create a Python virtual environment
+#### 2. (Recommended) Create a Python virtual environment
 
 ```bash
 python3 -m venv venv
@@ -151,7 +158,7 @@ source venv/bin/activate          # macOS / Linux
 venv\Scripts\activate             # Windows (PowerShell / CMD)
 ```
 
-### 3. Install the dependencies
+#### 3. Install the dependencies
 
 ```bash
 pip install requests urllib3 openpyxl
@@ -163,13 +170,26 @@ If you only need CSV output, you can skip `openpyxl`:
 pip install requests urllib3
 ```
 
-### 4. Verify the installation
+#### 4. Verify the installation
 
 ```bash
 python nios_health_check.py --help
 ```
 
 You should see a list of available command-line options.
+
+### PowerShell setup
+
+1. Clone or download this repository, or save [Nios-HealthCheck.ps1](powershell/Nios-HealthCheck.ps1) to a working folder.
+2. Open PowerShell and change to the folder that contains the script. If you cloned or downloaded the repo, the script is in the `powershell` folder.
+3. View the built-in help and start an interactive run:
+
+   ```powershell
+   Get-Help ./Nios-HealthCheck.ps1 -Full
+   ./Nios-HealthCheck.ps1
+   ```
+
+See the [PowerShell installation guide](powershell/README.md#installation) for Windows execution policy and signing details.
 
 ---
 
@@ -380,6 +400,11 @@ Because this script authenticates against a Grid with a privileged account, plea
 - The script **logs out of its WAPI session** at the end of each run to free up the Grid's session slot.
 
 ---
+
+## Contributors
+
+- Josh Nolan maintains the project and wrote the Python reference implementation.
+- Nick Warfield developed the PowerShell edition. [Original PowerShell repository](https://github.com/nwarfield-ib/nios-health-check-powershell)
 
 ## License & Attribution
 
