@@ -8,9 +8,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ### Added
 
-- Added the [PowerShell edition](powershell/README.md) alongside the Python reference implementation. Run `.\powershell\Nios-HealthCheck.ps1` from the repository root in Windows PowerShell 5.1 or PowerShell 7+.
+- Added the [PowerShell edition](powershell/README.md), developed by Nick Warfield, alongside the Python reference implementation. Run `.\powershell\Nios-HealthCheck.ps1` from the repository root in Windows PowerShell 5.1 or PowerShell 7+.
 - PowerShell accepts `-GridIp` and `-Username` for connection details. Use `-IncludeIp`, `-CapacityReport`, `-TopologyViz`, and `-LicenseReport` to enable optional data and reports. Use `-NoIncludeIp`, `-NoCapacityReport`, `-NoTopologyViz`, and `-NoLicenseReport` to skip them.
 - The PowerShell edition writes a core CSV, a JSON summary, and a JSON Lines log. Optional output includes two capacity CSVs, topology HTML and JSON, and license CSV and JSON.
+
+### Changed
+
+- Updated the [main README](README.md) with runtime requirements and installation steps for both editions, including how to view PowerShell help and start an interactive run.
 
 ---
 
