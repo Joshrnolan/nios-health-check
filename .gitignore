@@ -1,0 +1,7 @@
+# Output from health check runs: contains Grid topology, licensing and
+# operational data. Never commit it.
+nios_health_audit_*/
+*.log.jsonl
+
+__pycache__/
+*.pyc
